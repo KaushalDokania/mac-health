@@ -14,6 +14,10 @@ import time
 import subprocess
 from datetime import datetime
 
+VERSION = "1.2.0"
+GITHUB_REPO = "KaushalDokania/mac-health"
+RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/monitor.py"
+
 # Dynamic Hardware Detection
 def run_cmd(cmd_list):
     try:
@@ -359,9 +363,125 @@ def check_and_alert():
     if not batt["is_ac"] and batt["condition"] != "Normal" and batt["percent"] and batt["percent"] < 30:
         send_notification("Mac Power Warning", f"Battery at {batt['percent']}% (Degraded)", "Plug into AC power to prevent CPU power throttling.", "batt_warn")
 
+def check_update_available():
+    """Quick non-blocking check against GitHub releases to see if an update is available."""
+    check_cache = "/tmp/mac_health_update_cache.json"
+    now = time.time()
+    try:
+        import json
+        if os.path.exists(check_cache):
+            with open(check_cache, "r") as f:
+                data = json.load(f)
+            if now - data.get("checked_at", 0) < 86400: # 24 hours
+                if data.get("update_available"):
+                    return data.get("remote_version")
+                return None
+    except Exception:
+        pass
+
+    try:
+        import urllib.request
+        import json
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url, headers={"User-Agent": "mac-health", "Accept": "application/vnd.github.v3+json"})
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            if resp.status == 200:
+                rel = json.loads(resp.read().decode('utf-8'))
+                tag = rel.get("tag_name", "").lstrip("v")
+                is_newer = bool(tag and tag != VERSION)
+                with open(check_cache, "w") as f:
+                    json.dump({"checked_at": now, "update_available": is_newer, "remote_version": tag}, f)
+                return tag if is_newer else None
+    except Exception:
+        pass
+    return None
+
+def self_upgrade():
+    print(c(f"🚀 Checking for mac-health updates ({GITHUB_REPO})...", CYAN))
+    script_path = os.path.realpath(__file__)
+    script_dir = os.path.dirname(script_path)
+    git_dir = os.path.join(script_dir, ".git")
+
+    if os.path.isdir(git_dir):
+        # Installed via git repository
+        try:
+            print(c(f"Detected Git repo: {script_dir}", DIM))
+            res = subprocess.run(
+                ["git", "-C", script_dir, "pull", "--ff-only"],
+                capture_output=True, text=True, check=True
+            )
+            out = res.stdout.strip()
+            if "Already up to date" in out:
+                print(c("✅ mac-health is already at the latest version!", GREEN))
+            else:
+                print(c("🎉 Upgrade successful!", GREEN))
+                print(c(out, DIM))
+
+                # Restart background daemon if present
+                daemon_sh = os.path.join(script_dir, "install-daemon.sh")
+                if os.path.exists(daemon_sh):
+                    subprocess.run(["bash", daemon_sh, "restart"], capture_output=True)
+                    print(c("🔄 Background watchdog daemon refreshed.", DIM))
+            return
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or e.stdout).strip()
+            print(c(f"⚠️ Git pull failed: {err}", RED))
+            print(c("Falling back to direct script update...", YELLOW))
+        except Exception as e:
+            print(c(f"⚠️ Git error: {e}", RED))
+
+    # Standalone script fallback / direct download
+    try:
+        import urllib.request
+        import tempfile
+
+        print(c(f"Fetching latest release from GitHub...", DIM))
+        req = urllib.request.Request(RAW_URL, headers={"User-Agent": "mac-health-updater"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            code = resp.read().decode('utf-8')
+
+        if "Universal Apple Silicon" not in code:
+            print(c("❌ Update verification failed: downloaded file appears corrupt.", RED))
+            return
+
+        compile(code, "<string>", "exec")
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as tf:
+            tf.write(code)
+            temp_name = tf.name
+
+        os.replace(temp_name, script_path)
+        os.chmod(script_path, 0o755)
+        print(c(f"🎉 mac-health successfully updated to latest version ({script_path})!", GREEN))
+    except Exception as e:
+        print(c(f"❌ Upgrade failed: {e}", RED))
+
+def print_help():
+    print(f"""{c('mac-health', BOLD)} v{VERSION} — Universal Apple Silicon Health Monitor
+
+{c('USAGE:', BOLD)}
+  mh                    Show instant system health dashboard
+  mh -w, --watch        Live auto-refreshing dashboard (updates every 2s)
+  mh upgrade, update    Upgrade mac-health to the latest version
+  mh -v, --version      Show current version
+  mh -h, --help         Show this help guide
+
+{c('COMMAND ALIASES:', BOLD)}
+  mh, mhw, mac-health
+""")
+
 def main():
     args = sys.argv[1:]
-    if "--daemon" in args or "-d" in args:
+    if any(a in args for a in ["upgrade", "update", "--upgrade"]):
+        self_upgrade()
+        sys.exit(0)
+    elif any(a in args for a in ["-v", "--version", "version"]):
+        print(f"mac-health v{VERSION} ({CHIP_NAME}, {NCPU} cores, {TOTAL_RAM_GB:.0f}GB)")
+        sys.exit(0)
+    elif any(a in args for a in ["-h", "--help", "help"]):
+        print_help()
+        sys.exit(0)
+    elif "--daemon" in args or "-d" in args:
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Watchdog daemon active for {CHIP_NAME} ({NCPU} Cores, {TOTAL_RAM_GB:.0f}GB)...", flush=True)
         while True:
             try:
@@ -381,6 +501,9 @@ def main():
     else:
         print(format_dashboard())
         check_and_alert()
+        newer = check_update_available()
+        if newer:
+            print(c(f"\n💡 A new version of mac-health (v{newer}) is available! Run 'mh upgrade' to update.", YELLOW))
 
 if __name__ == '__main__':
     main()

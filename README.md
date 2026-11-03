@@ -71,6 +71,12 @@ mh
 # Live 2-second refreshing HUD (press Ctrl+C to exit)
 mhw
 
+# Upgrade mac-health to latest version directly from terminal
+mh upgrade
+
+# Show version & hardware summary
+mh --version
+
 # Run the multicore compute & dynamic memory ramp stress test
 python3 stress-test.py
 
