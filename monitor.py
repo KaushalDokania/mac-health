@@ -236,15 +236,26 @@ def get_developer_services():
     
     ollama_running = False
     ollama_models = []
-    ollama_ps = run_cmd(['ollama', 'ps'])
-    if ollama_ps and "NAME" in ollama_ps:
-        ollama_running = True
-        lines = ollama_ps.strip().split('\n')
-        if len(lines) > 1:
-            for l in lines[1:]:
-                m = l.split()
-                if m:
-                    ollama_models.append(m[0])
+    # Query Ollama REST API directly. DO NOT invoke `ollama` CLI as Ollama CLI auto-launches Ollama.app on macOS!
+    try:
+        import urllib.request
+        import json
+        host = os.environ.get('OLLAMA_HOST', '127.0.0.1:11434')
+        if not host.startswith(('http://', 'https://')):
+            host = 'http://' + host
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/ps", headers={"User-Agent": "mac-health"})
+        with urllib.request.urlopen(req, timeout=0.3) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode('utf-8'))
+                ollama_running = True
+                for model in data.get("models", []):
+                    name = model.get("name")
+                    if name:
+                        ollama_models.append(name)
+    except Exception:
+        # Passively ignore: server is not active or port is closed — do not wake up Ollama
+        ollama_running = False
+        ollama_models = []
 
     return {
         "docker_active": docker_running,
