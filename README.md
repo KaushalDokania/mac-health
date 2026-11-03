@@ -49,7 +49,7 @@ Designed for software engineers, local AI builders, and power users who need to 
 Clone and run the automated installer:
 
 ```bash
-git clone https://github.com/<your-username>/mac-health.git
+git clone https://github.com/KaushalDokania/mac-health.git
 cd mac-health
 ./setup.sh
 ```
