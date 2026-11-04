@@ -46,8 +46,13 @@ EOF
   status)
     launchctl list | grep "$PLIST_NAME" || echo "Daemon is not currently active."
     ;;
+  restart)
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    launchctl load "$PLIST_PATH"
+    echo "🔄 Health monitor daemon reloaded."
+    ;;
   *)
-    echo "Usage: $0 {install|uninstall|status}"
+    echo "Usage: $0 {install|uninstall|restart|status}"
     exit 1
     ;;
 esac

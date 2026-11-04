@@ -6,11 +6,30 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 BIN_DIR="$HOME/.local/bin"
 ZSHRC="$HOME/.zshrc"
+REPO_URL="https://github.com/KaushalDokania/mac-health.git"
 
 echo "🚀 Installing mac-health on $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)..."
+
+# If running via `curl ... | bash` or outside a git clone, clone/update to ~/.local/share/mac-health
+if [ ! -f "$SCRIPT_DIR/monitor.py" ]; then
+    INSTALL_DIR="$HOME/.local/share/mac-health"
+    mkdir -p "$HOME/.local/share"
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "📦 Updating existing repository in $INSTALL_DIR..."
+        git -C "$INSTALL_DIR" pull --ff-only || {
+            echo "⚠️ Git pull failed. Re-cloning fresh..."
+            rm -rf "$INSTALL_DIR"
+            git clone "$REPO_URL" "$INSTALL_DIR"
+        }
+    else
+        echo "📦 Cloning mac-health into $INSTALL_DIR..."
+        git clone "$REPO_URL" "$INSTALL_DIR"
+    fi
+    SCRIPT_DIR="$INSTALL_DIR"
+fi
 
 # 1. Ensure ~/.local/bin exists
 mkdir -p "$BIN_DIR"
@@ -19,6 +38,7 @@ mkdir -p "$BIN_DIR"
 chmod +x "$SCRIPT_DIR/monitor.py"
 chmod +x "$SCRIPT_DIR/install-daemon.sh"
 chmod +x "$SCRIPT_DIR/stress-test.py" 2>/dev/null || true
+chmod +x "$SCRIPT_DIR/identify-hogs.sh" 2>/dev/null || true
 
 # 3. Create symlinks in ~/.local/bin
 ln -sf "$SCRIPT_DIR/monitor.py" "$BIN_DIR/mac-health"
