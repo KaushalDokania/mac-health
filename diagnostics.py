@@ -1036,6 +1036,23 @@ def diagnose_process(pid: int) -> Dict[str, Any]:
     descriptors_info = get_process_descriptors_and_locks(pid)
     thread_sampling = sample_process(pid)
 
+    # Graceful comm inference if lineage couldn't resolve it (e.g. login shells or sandboxed ps)
+    if (not lineage_info.get("comm") or lineage_info.get("comm") == "unknown") and execution_context.get("args"):
+        raw_args = execution_context["args"].strip()
+        if raw_args:
+            first_token = raw_args.split()[0]
+            inferred_comm = os.path.basename(first_token).lstrip("-")
+            if inferred_comm:
+                lineage_info["comm"] = inferred_comm
+                if not lineage_info.get("chain"):
+                    lineage_info["chain"] = [{
+                        "pid": pid,
+                        "ppid": None,
+                        "comm": inferred_comm,
+                        "app": annotate_app(inferred_comm),
+                        "is_launchd_service": False,
+                    }]
+
     return {
         "pid": pid,
         "lineage": lineage_info,
