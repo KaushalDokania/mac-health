@@ -190,6 +190,71 @@ def tame_process_to_ecores(pid: int) -> bool:
     return success
 
 
+def restore_process_priority(pid: int) -> bool:
+    """
+    Restores normal scheduling priority and removes background QoS clamps from a process.
+    - `taskpolicy -B -p <PID>`: Removes Darwin Background QoS
+    - `renice 0 -p <PID>`: Restores normal scheduling priority (nice 0)
+    Returns True on success, False on error.
+    """
+    if pid <= 0:
+        return False
+
+    success = False
+
+    # 1. Remove background QoS
+    try:
+        r1 = subprocess.run(
+            ["taskpolicy", "-B", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if r1.returncode == 0:
+            success = True
+    except Exception:
+        pass
+
+    # 2. Reset nice level to 0
+    try:
+        r2 = subprocess.run(
+            ["renice", "0", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if r2.returncode == 0:
+            success = True
+    except Exception:
+        pass
+
+    return success
+
+
+def send_auto_tame_notification(comm: str, pid: int, duration_min: int = 15, cpu_pct: float = 90.0) -> bool:
+    """
+    Dispatches a macOS notification via osascript when a runaway process is auto-tamed.
+    Returns True on success, False on error.
+    """
+    title = "mac-health Auto-Tame"
+    subtitle = f"Tamed {comm} (PID {pid}) to E-cores"
+    message = f"Process exceeded {cpu_pct:.0f}% CPU for {duration_min}m. Clamped to Efficiency cores."
+    safe_title = title.replace('"', '\\"')
+    safe_subtitle = subtitle.replace('"', '\\"')
+    safe_message = message.replace('"', '\\"')
+    script = f'display notification "{safe_message}" with title "{safe_title}" subtitle "{safe_subtitle}"'
+    try:
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
 # ==============================================================================
 # Tier 2: Freeze & Resume (SIGSTOP / SIGCONT) with Auto-Resume Safety
 # ==============================================================================
