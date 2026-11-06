@@ -14,6 +14,11 @@ import time
 import subprocess
 from datetime import datetime
 
+# Ensure the directory containing the real monitor.py is on sys.path even when invoked via symlink
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 # Core mac-health v2.0 modules (Standard library only)
 import safety
 import config
