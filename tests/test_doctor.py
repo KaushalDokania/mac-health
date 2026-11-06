@@ -288,11 +288,11 @@ class TestExecutionContext(unittest.TestCase):
         self.assertEqual(cwd, "/Users/kaushaldokania/repo")
 
     def test_get_git_context_in_current_repo(self):
-        # Current worktree is a valid git worktree
+        # Current worktree is a valid git repository/worktree
         git_info = diagnostics.get_git_context(PROJECT_ROOT)
         self.assertIsNotNone(git_info)
         self.assertTrue(git_info["is_repo"])
-        self.assertEqual(git_info["branch"], "feat/phase-1-diagnostics")
+        self.assertTrue(len(git_info["branch"]) > 0)
         self.assertTrue(len(git_info["repo_name"]) > 0)
 
     def test_get_git_context_non_git_dir(self):
