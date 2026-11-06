@@ -14,7 +14,15 @@ import time
 import subprocess
 from datetime import datetime
 
-VERSION = "1.2.0"
+# Core mac-health v2.0 modules (Standard library only)
+import safety
+import config
+import watchdog
+import diagnostics
+import remediation
+import tui
+
+VERSION = "2.0.0"
 GITHUB_REPO = "KaushalDokania/mac-health"
 RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/monitor.py"
 
@@ -457,39 +465,287 @@ def self_upgrade():
         print(c(f"❌ Upgrade failed: {e}", RED))
 
 def print_help():
-    print(f"""{c('mac-health', BOLD)} v{VERSION} — Universal Apple Silicon Health Monitor
+    print(f"""{c('mac-health', BOLD)} v{VERSION} — Universal Apple Silicon Health Monitor & Autonomous Watchdog
 
 {c('USAGE:', BOLD)}
-  mh                    Show instant system health dashboard
-  mh -w, --watch        Live auto-refreshing dashboard (updates every 2s)
-  mh upgrade, update    Upgrade mac-health to the latest version
-  mh -v, --version      Show current version
-  mh -h, --help         Show this help guide
+  mh                         Show instant system health dashboard
+  mh doctor [PID|--top]      Diagnose root cause of process runaway (lineage, locks, threads)
+  mh doctor windowserver     Diagnose WindowServer high CPU and top GUI redraw consumers
+  mh doctor mds              Diagnose Spotlight indexing paths and developer dir thrashing
+  mh fix                     Launch interactive process triage & remediation TUI
+  mh fix --cpu               Launch triage TUI sorted by CPU%
+  mh fix --memory            Launch triage TUI sorted by memory pressure
+  mh fix <PID> [--tame]      Tame process to Apple Silicon Efficiency cores (Background QoS)
+  mh fix <PID> --freeze      Freeze process safely (SIGSTOP) with lock/socket inspection
+  mh fix <PID> --kill        Cleanly terminate process and all descendant children
+  mh restore <PID>           Restore tamed process to normal Performance cores (taskpolicy -B)
+  mh unfreeze <PID>          Resume frozen process (SIGCONT)
+  mh config [--view]         View active configuration (~/.config/mac-health/config.json)
+  mh config --reset          Reset configuration to recommended default settings
+  mh config --path           Print configuration file path
+  mh -w, --watch             Live auto-refreshing dashboard (updates every 2s)
+  mh -d, --daemon            Run background watchdog daemon with autonomous auto-taming
+  mh upgrade, update         Upgrade mac-health to latest version
+  mh -v, --version           Show current version
+  mh -h, --help              Show this help guide
 
 {c('COMMAND ALIASES:', BOLD)}
   mh, mhw, mac-health
 """)
 
+
+def handle_doctor(args):
+    """Router for 'mh doctor [PID|--top|windowserver|mds]'."""
+    if any(a in args for a in ["-h", "--help", "help"]):
+        print(f"""{c('mac-health doctor', BOLD)} — Process Diagnostic & Root-Cause Inspector
+
+{c('USAGE:', BOLD)}
+  mh doctor <PID>            Diagnose target process (lineage, locks, sockets, call stacks)
+  mh doctor --top            Auto-detect and diagnose the #1 runaway CPU process
+  mh doctor windowserver     Diagnose WindowServer high CPU and top GUI redraw consumers
+  mh doctor mds              Diagnose Spotlight indexing paths and developer dir thrashing
+""")
+        return
+
+    # Check for WindowServer
+    if any("windowserver" in a.lower() for a in args):
+        rep = diagnostics.diagnose_windowserver()
+        print(diagnostics.format_windowserver_report(rep))
+        return
+
+    # Check for Spotlight / mds_stores
+    if any(a.lower() in ("mds", "mds_stores", "spotlight") for a in args):
+        rep = diagnostics.diagnose_mds_stores()
+        print(diagnostics.format_mds_stores_report(rep))
+        return
+
+    # Check for explicit PID
+    pid_target = None
+    for a in args:
+        if a.isdigit():
+            pid_target = int(a)
+            break
+
+    if pid_target is not None:
+        if not remediation.is_process_alive(pid_target):
+            print(c(f"❌ Process PID {pid_target} is not running.", RED))
+            return
+        rep = diagnostics.diagnose_process(pid_target)
+        print(diagnostics.format_doctor_report(rep))
+        return
+
+    # Auto-detect top consumer or prompt
+    candidates = remediation.get_triage_candidates(sort_by="cpu", limit=5)
+    if candidates and (candidates[0]["cpu_pct"] >= 15.0 or "--top" in args):
+        top_cand = candidates[0]
+        print(c(f"🔍 Auto-diagnosing #1 CPU consumer: PID {top_cand['pid']} ({top_cand['comm']}) at {top_cand['cpu_pct']:.1f}% CPU...", CYAN))
+        rep = diagnostics.diagnose_process(top_cand["pid"])
+        print(diagnostics.format_doctor_report(rep))
+    elif candidates:
+        print(c("🔬 mac-health Doctor ── Active Candidate Processes", BOLD))
+        print(c("No severe runaway process (>15% CPU) currently active. Top active processes:", DIM))
+        print()
+        for cand in candidates:
+            print(f"  • PID {cand['pid']:>6}: {cand['comm']:<20} {cand['cpu_pct']:>5.1f}% CPU  {cand['mem_rss_mb']:>7.1f} MB RSS")
+        print()
+        print(c("Run 'mh doctor <PID>' to inspect any process, or 'mh doctor --top' to force inspection.", CYAN))
+    else:
+        print(c("No active user processes found to diagnose.", YELLOW))
+
+
+def handle_fix(args):
+    """Router for 'mh fix [PID|--cpu|--memory|--freeze|--kill]'."""
+    if any(a in args for a in ["-h", "--help", "help"]):
+        print(f"""{c('mac-health fix', BOLD)} — Runaway Process Triage & Tiered Remediation
+
+{c('USAGE:', BOLD)}
+  mh fix                     Launch interactive keyboard-navigable triage TUI
+  mh fix --cpu               Launch triage TUI sorted by CPU utilization
+  mh fix --memory            Launch triage TUI sorted by memory pressure
+  mh fix <PID> [--tame]      Tame process to Apple Silicon Efficiency cores (Background QoS)
+  mh fix <PID> --freeze      Safely freeze process (SIGSTOP) with socket/lock inspection
+  mh fix <PID> --kill        Cleanly terminate process and all descendant children
+""")
+        return
+
+    # Check for direct PID
+    pid_target = None
+    for a in args:
+        if a.isdigit():
+            pid_target = int(a)
+            break
+
+    if pid_target is not None:
+        if not remediation.is_process_alive(pid_target):
+            print(c(f"❌ Process PID {pid_target} is not running.", RED))
+            return
+
+        comm = remediation.get_comm_for_pid(pid_target) or f"PID {pid_target}"
+
+        # Safety verification
+        is_safe, reason = safety.is_action_permitted(pid_target, comm)
+        if not is_safe:
+            print(c(f"🛡️ Safety Shield: Operation blocked on PID {pid_target} ({comm}).", RED))
+            print(c(f"   Reason: {reason}", DIM))
+            return
+
+        if any(a in args for a in ["--freeze", "-f"]):
+            ok, msg = remediation.freeze_process(pid_target)
+            if ok:
+                print(c(f"❄️ PID {pid_target} ({comm}) frozen with SIGSTOP.", YELLOW))
+                if msg:
+                    print(c(f"   Notice: {msg}", DIM))
+                print(c(f"💡 Resume anytime with: mh unfreeze {pid_target}", CYAN))
+            else:
+                print(c(f"❌ Failed to freeze PID {pid_target}: {msg}", RED))
+        elif any(a in args for a in ["--kill", "-k", "--prune"]):
+            force = "--force" in args
+            is_managed, s_label = remediation.is_managed_by_launchd(pid_target)
+            if is_managed:
+                print(c(f"🛡️ PID {pid_target} is managed by launchd ({s_label}). Using bootout shield.", YELLOW))
+            ok = remediation.terminate_process_tree(pid_target, force=force)
+            if ok:
+                print(c(f"✅ Process tree for PID {pid_target} ({comm}) terminated successfully.", GREEN))
+            else:
+                print(c(f"❌ Failed to terminate process tree for PID {pid_target}.", RED))
+        else:
+            # Default action: Tier 1 Tame to E-cores
+            ok = remediation.tame_process_to_ecores(pid_target)
+            if ok:
+                print(c(f"✅ PID {pid_target} ({comm}) tamed to Apple Silicon Efficiency cores.", GREEN))
+                print(c("   Clamped to Background QoS and nice +19. 100% of Performance cores restored.", DIM))
+                print(c(f"💡 Restore normal priority anytime with: mh restore {pid_target}", CYAN))
+            else:
+                print(c(f"❌ Failed to tame PID {pid_target}.", RED))
+        return
+
+    # If no PID provided, determine sort mode and launch TUI
+    sort_mode = "composite"
+    if "--cpu" in args or "-c" in args:
+        sort_mode = "cpu"
+    elif "--memory" in args or "--mem" in args or "-m" in args:
+        sort_mode = "memory"
+
+    if sys.stdout.isatty():
+        tui.run_triage_tui(default_sort=sort_mode)
+    else:
+        # Non-TTY fallback output
+        print(c(f"mac-health Fix: Runaway Process Triage (sort: {sort_mode.upper()})", BOLD))
+        candidates = remediation.get_triage_candidates(sort_by=sort_mode, limit=10)
+        if not candidates:
+            print("No runaway processes detected. System healthy.")
+        else:
+            print(f"{'PID':>7}  {'%CPU':>6}  {'RAM (MB)':>9}  {'COMM':<20}  {'RECOMMENDED'}")
+            print("─" * 68)
+            for p in candidates:
+                rec = f"mh fix {p['pid']} --tame"
+                print(f"{p['pid']:>7}  {p['cpu_pct']:>6.1f}  {p['mem_rss_mb']:>9.1f}  {p['comm'][:20]:<20}  {rec}")
+
+
+def handle_restore(args):
+    """Router for 'mh restore <PID>'."""
+    pid_target = next((int(a) for a in args if a.isdigit()), None)
+    if not pid_target:
+        print(c("Usage: mh restore <PID>", RED))
+        return
+
+    comm = remediation.get_comm_for_pid(pid_target) or f"PID {pid_target}"
+    ok = remediation.restore_process_priority(pid_target)
+    if ok:
+        print(c(f"✅ PID {pid_target} ({comm}) priority restored to normal (Interactive QoS + nice 0).", GREEN))
+    else:
+        print(c(f"❌ Failed to restore priority for PID {pid_target}.", RED))
+
+
+def handle_unfreeze(args):
+    """Router for 'mh unfreeze <PID>'."""
+    pid_target = next((int(a) for a in args if a.isdigit()), None)
+    if not pid_target:
+        print(c("Usage: mh unfreeze <PID>", RED))
+        return
+
+    comm = remediation.get_comm_for_pid(pid_target) or f"PID {pid_target}"
+    ok = remediation.unfreeze_process(pid_target)
+    if ok:
+        print(c(f"✅ PID {pid_target} ({comm}) resumed (SIGCONT sent).", GREEN))
+    else:
+        print(c(f"❌ Failed to unfreeze PID {pid_target}.", RED))
+
+
+def handle_config(args):
+    """Router for 'mh config [--view|--reset|--path|--edit]'."""
+    if any(a in args for a in ["-h", "--help", "help"]):
+        print(f"""{c('mac-health config', BOLD)} — Configuration & Watchdog Policy Manager
+
+{c('USAGE:', BOLD)}
+  mh config                  View current watchdog policy and configuration
+  mh config --reset          Reset configuration to recommended default settings
+  mh config --path           Print configuration file path
+  mh config --edit           Open configuration in default editor
+""")
+        return
+
+    if "--reset" in args:
+        ok = config.reset_config_to_defaults()
+        if ok:
+            print(c("✅ Configuration reset to recommended defaults:", GREEN))
+            print(config.format_config_view())
+        else:
+            print(c("❌ Failed to reset configuration file.", RED))
+    elif "--path" in args:
+        print(config.get_config_path())
+    elif "--edit" in args:
+        editor = os.environ.get("EDITOR") or "nano"
+        cfg_path = config.get_config_path()
+        if not os.path.exists(cfg_path):
+            config.save_config(config.get_default_config())
+        subprocess.run([editor, cfg_path])
+    else:
+        print(config.format_config_view())
+
+
 def main():
     args = sys.argv[1:]
-    if any(a in args for a in ["upgrade", "update", "--upgrade"]):
+    if not args:
+        print(format_dashboard())
+        check_and_alert()
+        newer = check_update_available()
+        if newer:
+            print(c(f"\n💡 A new version of mac-health (v{newer}) is available! Run 'mh upgrade' to update.", YELLOW))
+        return
+
+    cmd = args[0].lower()
+
+    if cmd in ("upgrade", "update", "--upgrade"):
         self_upgrade()
         sys.exit(0)
-    elif any(a in args for a in ["-v", "--version", "version"]):
+    elif cmd in ("-v", "--version", "version"):
         print(f"mac-health v{VERSION} ({CHIP_NAME}, {NCPU} cores, {TOTAL_RAM_GB:.0f}GB)")
         sys.exit(0)
-    elif any(a in args for a in ["-h", "--help", "help"]):
+    elif cmd in ("-h", "--help", "help"):
         print_help()
         sys.exit(0)
-    elif "--daemon" in args or "-d" in args:
+    elif cmd == "doctor":
+        handle_doctor(args[1:])
+    elif cmd in ("fix", "triage"):
+        handle_fix(args[1:])
+    elif cmd == "restore":
+        handle_restore(args[1:])
+    elif cmd in ("unfreeze", "resume"):
+        handle_unfreeze(args[1:])
+    elif cmd in ("config", "cfg"):
+        handle_config(args[1:])
+    elif "--daemon" in args or "-d" in args or cmd == "daemon":
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Watchdog daemon active for {CHIP_NAME} ({NCPU} Cores, {TOTAL_RAM_GB:.0f}GB)...", flush=True)
         while True:
             try:
                 check_and_alert()
-            except Exception as e:
+                watchdog.evaluate_auto_tame_policy()
+                remediation.auto_resume_frozen_processes()
+            except Exception:
                 pass
             time.sleep(POLL_INTERVAL_SEC)
-    elif "--watch" in args or "-w" in args:
+    elif "--watch" in args or "-w" in args or cmd == "watch":
         try:
             while True:
                 print("\033[H\033[J", end="")
@@ -499,11 +755,13 @@ def main():
         except KeyboardInterrupt:
             print("\nExited live watch.")
     else:
-        print(format_dashboard())
-        check_and_alert()
-        newer = check_update_available()
-        if newer:
-            print(c(f"\n💡 A new version of mac-health (v{newer}) is available! Run 'mh upgrade' to update.", YELLOW))
+        # Check if first argument is a PID or flag
+        if cmd.isdigit():
+            handle_doctor(args)
+        else:
+            print(c(f"Unknown command: '{cmd}'", RED))
+            print_help()
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()

@@ -110,6 +110,14 @@ def save_config(cfg: Dict[str, Any], config_path: Optional[str] = None) -> bool:
         return False
 
 
+def reset_config_to_defaults(config_path: Optional[str] = None) -> bool:
+    """
+    Resets the configuration to default v2.0.0 settings and saves it to disk.
+    """
+    defaults = get_default_config()
+    return save_config(defaults, config_path=config_path)
+
+
 def format_config_view(cfg: Optional[Dict[str, Any]] = None) -> str:
     """
     Formats a clean, human-readable view of current configuration settings.

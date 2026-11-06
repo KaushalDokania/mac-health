@@ -500,5 +500,81 @@ class TestComprehensiveDiagnoseProcess(unittest.TestCase):
         self.assertEqual(report["thread_sampling"]["tier"], "B")
 
 
+class TestReportFormatters(unittest.TestCase):
+    """Tests for ANSI terminal report formatters."""
+
+    def test_format_doctor_report(self):
+        sample_report = {
+            "pid": 4567,
+            "lineage": {
+                "comm": "python3",
+                "parent_app": "Cursor.app",
+                "is_launchd_child": False,
+                "chain": [
+                    {"pid": 1, "comm": "launchd", "app": None},
+                    {"pid": 100, "comm": "Cursor", "app": "Cursor.app"},
+                    {"pid": 4567, "comm": "python3", "app": None},
+                ]
+            },
+            "execution_context": {
+                "cwd": "/Users/kaushal/project",
+                "args": "python3 script.py",
+                "git": {"repository": "project", "branch": "main", "dirty": False}
+            },
+            "descriptors": {
+                "total_open_descriptors": 10,
+                "tcp_sockets": [{"name": "127.0.0.1:8000", "state": "LISTEN", "type": "TCP"}],
+                "active_locks": [{"path": "/tmp/test.lock", "type": "flock"}]
+            },
+            "thread_sampling": {
+                "tier_used": "tier_a",
+                "status": "OK",
+                "sample": {
+                    "symbols": [{"symbol": "PyEval_EvalFrame", "count": 25, "library": "Python"}]
+                }
+            }
+        }
+        output = diagnostics.format_doctor_report(sample_report)
+        self.assertIn("Process Diagnostic for PID 4567", output)
+        self.assertIn("Cursor.app", output)
+        self.assertIn("/Users/kaushal/project", output)
+        self.assertIn("127.0.0.1:8000", output)
+        self.assertIn("/tmp/test.lock", output)
+        self.assertIn("PyEval_EvalFrame", output)
+
+    def test_format_windowserver_report(self):
+        ws_report = {
+            "pid": 500,
+            "cpu_percent": 15.2,
+            "mem_percent": 3.4,
+            "status": "HEALTHY",
+            "top_gui_consumers": [
+                {"pid": 1234, "comm": "Cursor", "cpu_percent": 12.0, "mem_percent": 2.1}
+            ],
+            "skylight_logs": {"summary": "2 log entries", "entries": ["log line 1"]}
+        }
+        output = diagnostics.format_windowserver_report(ws_report)
+        self.assertIn("WindowServer", output)
+        self.assertIn("Cursor", output)
+        self.assertIn("HEALTHY", output)
+
+    def test_format_mds_stores_report(self):
+        mds_report = {
+            "pid": 600,
+            "cpu_percent": 85.0,
+            "mem_percent": 1.5,
+            "status": "INDEXING_DEV_DIRS",
+            "thrashing_detected": True,
+            "path_count": 50,
+            "detected_developer_dirs": [
+                {"matched_dir": "/repo/node_modules", "pattern": "node_modules"}
+            ]
+        }
+        output = diagnostics.format_mds_stores_report(mds_report)
+        self.assertIn("mds_stores", output)
+        self.assertIn("node_modules", output)
+        self.assertIn("WARNING", output)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -60,6 +60,11 @@ __all__ = [
     
     # Comprehensive Process Doctor
     "diagnose_process",
+    
+    # Report Formatters
+    "format_doctor_report",
+    "format_windowserver_report",
+    "format_mds_stores_report",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1044,272 @@ def diagnose_process(pid: int) -> Dict[str, Any]:
         "thread_sampling": thread_sampling,
         "timestamp": time.time(),
     }
+
+
+# ---------------------------------------------------------------------------
+# ANSI Terminal Report Formatters
+# ---------------------------------------------------------------------------
+
+_IS_TTY = sys.stdout.isatty()
+
+def _c(text: str, code: str) -> str:
+    if not _IS_TTY:
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+_BOLD = "1"
+_DIM = "2"
+_RED = "31"
+_GREEN = "32"
+_YELLOW = "33"
+_BLUE = "34"
+_MAGENTA = "35"
+_CYAN = "36"
+
+
+def format_doctor_report(report: Dict[str, Any]) -> str:
+    """
+    Renders an ANSI-styled diagnostic report from diagnose_process() data.
+    """
+    pid = report.get("pid", 0)
+    lineage = report.get("lineage", {})
+    exec_ctx = report.get("execution_context", {})
+    desc = report.get("descriptors", {})
+    sampling = report.get("thread_sampling", {})
+
+    comm = lineage.get("comm") or "unknown"
+    parent_app = lineage.get("parent_app")
+    is_launchd = lineage.get("is_launchd_child", False)
+
+    # Safety check
+    try:
+        import safety
+        is_safe, safety_reason = safety.is_action_permitted(pid, comm)
+    except Exception:
+        is_safe, safety_reason = True, "Safety check unavailable"
+
+    safety_badge = _c("TARGETABLE", _GREEN) if is_safe else _c("PROTECTED", _RED)
+
+    border = "─" * 68
+    lines = [
+        border,
+        _c(f"🔬 mac-health Doctor ── Process Diagnostic for PID {pid} ({comm})", f"{_BOLD};{_CYAN}"),
+        border,
+        f"  • Target Process   : {_c(comm, _BOLD)} (PID {pid})",
+        f"  • Safety Shield    : [{safety_badge}] {_c(safety_reason, _DIM)}",
+        f"  • Launchd Managed  : {'Yes (Automatic Respawn Risk)' if is_launchd else 'No'}",
+    ]
+
+    if parent_app:
+        lines.append(f"  • Developer App    : {_c(parent_app, _YELLOW)}")
+
+    # 1. Process Lineage Tree
+    lines.extend([
+        "",
+        _c(" 🌳 PROCESS LINEAGE TREE", _BOLD),
+    ])
+    chain = lineage.get("chain", [])
+    if chain:
+        for idx, node in enumerate(chain):
+            indent = "    " + "   " * idx
+            prefix = "└── " if idx > 0 else "• "
+            node_pid = node.get("pid")
+            node_comm = node.get("comm")
+            node_app = node.get("app")
+            is_target = (node_pid == pid)
+
+            label = f"PID {node_pid}: {node_comm}"
+            if is_target:
+                label = _c(label + " [TARGET]", f"{_BOLD};{_CYAN}")
+            elif node_app:
+                label += f" {_c(f'[{node_app}]', _YELLOW)}"
+            elif node_pid == 1:
+                label += f" {_c('[system init]', _DIM)}"
+
+            lines.append(f"{indent}{prefix}{label}")
+    else:
+        lines.append(f"    (Unable to resolve lineage for PID {pid})")
+
+    # 2. Execution Context
+    lines.extend([
+        "",
+        _c(" 📂 EXECUTION CONTEXT", _BOLD),
+    ])
+    cwd = exec_ctx.get("cwd") or "(unknown)"
+    args = exec_ctx.get("args") or "(unknown)"
+    git_info = exec_ctx.get("git")
+
+    lines.append(f"  • Working Dir      : {cwd}")
+    if git_info and git_info.get("repository"):
+        git_label = f"{git_info['repository']} (branch: {git_info.get('branch', 'unknown')})"
+        if git_info.get("dirty"):
+            git_label += f" {_c('[dirty]', _YELLOW)}"
+        lines.append(f"  • Git Context      : {git_label}")
+    lines.append(f"  • Command & Args   : {_c(args[:120] + ('...' if len(args) > 120 else ''), _DIM)}")
+
+    # 3. File Descriptors & Locks
+    lines.extend([
+        "",
+        _c(" 🔒 OPEN DESCRIPTORS & LOCKS", _BOLD),
+    ])
+    total_fds = desc.get("total_open_descriptors", 0)
+    lines.append(f"  • Total Descriptors: {total_fds} open FDs")
+
+    sockets = desc.get("tcp_sockets", [])
+    if sockets:
+        sock_strs = [s.get("name", "") for s in sockets[:3]]
+        lines.append(f"  • TCP Sockets ({len(sockets)}): {_c(', '.join(sock_strs), _MAGENTA)}")
+    else:
+        lines.append("  • TCP Sockets      : None detected")
+
+    locks = desc.get("active_locks", [])
+    if locks:
+        for lock in locks[:4]:
+            l_path = lock.get("path", "")
+            l_type = lock.get("type", "lock")
+            lines.append(f"  • Active Lock      : {_c(l_path, _RED)} ({l_type})")
+    else:
+        lines.append("  • Active Locks     : None detected")
+
+    # 4. Thread State Sampling
+    lines.extend([
+        "",
+        _c(" 🧵 THREAD STATE SAMPLING", _BOLD),
+    ])
+    tier = sampling.get("tier_used", "unknown").replace("_", " ").upper()
+    lines.append(f"  • Sampling Ladder  : {_c(tier, _CYAN)} (Status: {sampling.get('status', 'OK')})")
+
+    sample_data = sampling.get("sample", {})
+    if tier.startswith("TIER A") and "symbols" in sample_data:
+        symbols = sample_data.get("symbols", [])
+        if symbols:
+            lines.append("  • Call Stack Hotspots:")
+            for s in symbols[:5]:
+                sym_name = s.get("symbol", "")
+                lib_name = s.get("library", "")
+                cnt = s.get("count", 0)
+                lib_str = f" ({lib_name})" if lib_name else ""
+                lines.append(f"      {_c(str(cnt), _BOLD)} hits: {sym_name}{_c(lib_str, _DIM)}")
+        else:
+            lines.append("  • Call Stack       : Idle / unprivileged")
+    elif tier.startswith("TIER B") and "state_counts" in sample_data:
+        t_cnt = sample_data.get("thread_count", 0)
+        r_cnt = sample_data.get("running_threads", 0)
+        w_cnt = sample_data.get("waiting_threads", 0)
+        lines.append(f"  • Thread Counts    : {t_cnt} total ({r_cnt} running, {w_cnt} waiting)")
+    elif tier.startswith("TIER C") and "cpu_delta" in sample_data:
+        cpu_d = sample_data.get("cpu_delta", 0.0)
+        dur = sample_data.get("duration_seconds", 0.25)
+        lines.append(f"  • Instant CPU Delta: {cpu_d:.1f}% across {dur:.2f}s")
+
+    # 5. Recommendations
+    lines.extend([
+        "",
+        _c(" 💡 RECOMMENDED ACTIONS", _BOLD),
+    ])
+    if not is_safe:
+        lines.append(f"  • {_c('CRITICAL:', _RED)} Process is system protected. Do not attempt termination.")
+    else:
+        lines.append(f"  • Tame to E-cores  : {_c(f'mh fix {pid} --tame', _GREEN)} (Preserves state; clamps to low-power E-cores)")
+        if locks or sockets:
+            lines.append(f"  • {_c('CAUTION:', _YELLOW)} Holds open locks/sockets. Prefer taming over freeze/kill.")
+        else:
+            lines.append(f"  • Freeze Process   : {_c(f'mh fix {pid} --freeze', _YELLOW)} (Temporarily pause with SIGSTOP)")
+            lines.append(f"  • Clean Prune      : {_c(f'mh fix {pid} --kill', _RED)} (Terminate tree and clean child processes)")
+
+    lines.append(border)
+    return "\n".join(lines)
+
+
+def format_windowserver_report(report: Dict[str, Any]) -> str:
+    """
+    Formats the WindowServer diagnostic report.
+    """
+    pid = report.get("pid")
+    cpu = report.get("cpu_percent", 0.0)
+    mem = report.get("mem_percent", 0.0)
+    status = report.get("status", "UNKNOWN")
+    top_gui = report.get("top_gui_consumers", [])
+    skylight = report.get("skylight_logs", {})
+
+    status_color = _GREEN if status == "HEALTHY" else _RED
+    border = "─" * 68
+    lines = [
+        border,
+        _c("🖥️ mac-health Doctor ── WindowServer (GUI Display Server) Diagnostic", f"{_BOLD};{_CYAN}"),
+        border,
+        f"  • Daemon Status    : [{_c(status, status_color)}] (PID {pid or 'N/A'})",
+        f"  • CPU / Memory     : {cpu:.1f}% CPU, {mem:.1f}% RSS",
+        "",
+        _c(" 🎨 TOP GUI REDRAW CONSUMERS (Causing WindowServer load)", _BOLD),
+    ]
+
+    if top_gui:
+        for idx, consumer in enumerate(top_gui[:8], 1):
+            c_pid = consumer.get("pid")
+            c_comm = consumer.get("comm")
+            c_cpu = consumer.get("cpu_percent", 0.0)
+            c_mem = consumer.get("mem_percent", 0.0)
+            lines.append(f"    {idx}. {_c(c_comm, _BOLD)} (PID {c_pid}): {_c(f'{c_cpu:.1f}% CPU', _YELLOW)}, {c_mem:.1f}% MEM")
+    else:
+        lines.append("    (No high GUI consumer processes identified)")
+
+    lines.extend([
+        "",
+        _c(" 📜 SKYLIGHT LOG ANALYSIS", _BOLD),
+        f"  • Log Status       : {skylight.get('summary', 'No log entries found')}",
+    ])
+    entries = skylight.get("entries", [])
+    if entries:
+        for entry in entries[-3:]:
+            lines.append(f"    {_c('•', _DIM)} {_c(entry[:100], _DIM)}")
+
+    lines.append(border)
+    return "\n".join(lines)
+
+
+def format_mds_stores_report(report: Dict[str, Any]) -> str:
+    """
+    Formats the mds_stores (Spotlight) diagnostic report.
+    """
+    pid = report.get("pid")
+    cpu = report.get("cpu_percent", 0.0)
+    mem = report.get("mem_percent", 0.0)
+    status = report.get("status", "UNKNOWN")
+    thrashing = report.get("thrashing_detected", False)
+    dev_dirs = report.get("detected_developer_dirs", [])
+    path_count = report.get("path_count", 0)
+
+    status_color = _YELLOW if thrashing else _GREEN
+    border = "─" * 68
+    lines = [
+        border,
+        _c("🔍 mac-health Doctor ── mds_stores (Spotlight Indexer) Diagnostic", f"{_BOLD};{_CYAN}"),
+        border,
+        f"  • Indexer Status   : [{_c(status, status_color)}] (PID {pid or 'N/A'})",
+        f"  • CPU / Memory     : {cpu:.1f}% CPU, {mem:.1f}% RSS",
+        f"  • Open Index Paths : {path_count} active files being crawled",
+        "",
+        _c(" 📁 DETECTED DEVELOPER DIRECTORY THRASHING", _BOLD),
+    ]
+
+    if dev_dirs:
+        lines.append(f"  {_c('WARNING:', _RED)} Spotlight is actively traversing high-churn developer directories:")
+        for d in dev_dirs[:6]:
+            m_dir = d.get("matched_dir", "")
+            pat = d.get("pattern", "")
+            lines.append(f"    • {_c(m_dir, _YELLOW)} (matched: {_c(pat, _BOLD)})")
+        lines.extend([
+            "",
+            _c(" 💡 RECOMMENDED ACTION", _BOLD),
+            "  Add these developer directories to System Settings > Siri & Spotlight > Spotlight Privacy",
+            "  or place an empty '.metadata_never_index' file in the directory to stop thrashing.",
+        ])
+    else:
+        lines.append("  • No heavy developer directory thrashing detected (normal indexing).")
+
+    lines.append(border)
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

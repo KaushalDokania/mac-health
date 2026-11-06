@@ -529,6 +529,19 @@ class TestWatchdogPolicyEngine(unittest.TestCase):
         self.assertEqual(history["8001"]["comm"], "tuple_proc")
         self.assertEqual(history["8002"]["comm"], "dict_proc")
 
+    def test_reset_config_to_defaults(self):
+        """reset_config_to_defaults restores defaults and writes them to disk."""
+        target_file = os.path.join(self.test_dir.name, "reset_config.json")
+        custom_cfg = {"version": "0.1", "custom_key": True}
+        config.save_config(custom_cfg, target_file)
+
+        res = config.reset_config_to_defaults(target_file)
+        self.assertTrue(res)
+        loaded = config.load_config(target_file)
+        self.assertEqual(loaded["version"], "2.0.0")
+        self.assertIn("auto_tame", loaded)
+        self.assertNotIn("custom_key", loaded)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -291,13 +291,13 @@ def render_triage_view(
 # Interactive Control Loop
 # ==============================================================================
 
-def run_triage_tui() -> None:
+def run_triage_tui(default_sort: str = "composite") -> None:
     """
     Main interactive TUI loop.
     Guarantees clean cursor and terminal state upon exit.
     """
     sort_modes = ["composite", "cpu", "memory"]
-    sort_idx = 0
+    sort_idx = sort_modes.index(default_sort) if default_sort in sort_modes else 0
     selected_idx = 0
     status_msg = ""
 
