@@ -447,6 +447,10 @@ def annotate_app(comm: str, args: str = "") -> Optional[str]:
         return "Code.app"
     if re.search(r"iTerm(?:2)?(?:\.app)?\b", combined):
         return "iTerm2.app"
+    if re.search(r"\bWarp(?:\.app)?\b|/Warp\.app/", combined):
+        return "Warp.app"
+    if re.search(r"\bClaude(?:\.app)?\b|/Claude\.app/", combined):
+        return "Claude.app"
     if re.search(r"(?:/Applications(?:/Utilities)?/)?Terminal\.app|\bTerminal\b", combined):
         return "Terminal.app"
     if re.search(r"\btmux\b", combined):
@@ -1049,9 +1053,20 @@ def diagnose_process(pid: int) -> Dict[str, Any]:
                         "pid": pid,
                         "ppid": None,
                         "comm": inferred_comm,
-                        "app": annotate_app(inferred_comm),
+                        "app": annotate_app(inferred_comm, raw_args),
                         "is_launchd_service": False,
                     }]
+
+    # Annotate developer application using full execution args if available
+    args_str = execution_context.get("args") or ""
+    if args_str and not lineage_info.get("parent_app"):
+        annotated = annotate_app(lineage_info.get("comm") or "", args_str)
+        if annotated:
+            lineage_info["parent_app"] = annotated
+            if lineage_info.get("chain"):
+                for node in lineage_info["chain"]:
+                    if node.get("pid") == pid and not node.get("app"):
+                        node["app"] = annotated
 
     return {
         "pid": pid,
