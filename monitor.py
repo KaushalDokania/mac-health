@@ -540,18 +540,41 @@ def handle_doctor(args):
         return
 
     # Auto-detect top consumer or prompt
-    candidates = remediation.get_triage_candidates(sort_by="cpu", limit=5)
+    candidates = remediation.get_triage_candidates(sort_by="cpu", limit=10)
     if candidates and (candidates[0]["cpu_pct"] >= 15.0 or "--top" in args):
         top_cand = candidates[0]
-        print(c(f"🔍 Auto-diagnosing #1 CPU consumer: PID {top_cand['pid']} ({top_cand['comm']}) at {top_cand['cpu_pct']:.1f}% CPU...", CYAN))
+        base_comm = top_cand.get("base_comm") or os.path.basename(top_cand.get("comm", ""))
+
+        if "windowserver" in base_comm.lower():
+            print(c(f"🔍 Auto-diagnosing #1 CPU consumer: WindowServer (PID {top_cand['pid']}) at {top_cand['cpu_pct']:.1f}% CPU...", CYAN))
+            rep = diagnostics.diagnose_windowserver()
+            print(diagnostics.format_windowserver_report(rep))
+            # Also check if there is a targetable user process next in line
+            user_candidates = [c for c in candidates if not c.get("is_protected")]
+            if user_candidates and user_candidates[0]["cpu_pct"] >= 10.0:
+                nxt = user_candidates[0]
+                nxt_comm = nxt.get("base_comm") or os.path.basename(nxt.get("comm", ""))
+                print(c(f"\n💡 High User-Space Process Detected: PID {nxt['pid']} ({nxt_comm}) at {nxt['cpu_pct']:.1f}% CPU", YELLOW))
+                print(c(f"   Inspect with: mh doctor {nxt['pid']}", CYAN))
+            return
+
+        if base_comm.lower() in ("mds_stores", "mds"):
+            print(c(f"🔍 Auto-diagnosing #1 CPU consumer: Spotlight Indexer (PID {top_cand['pid']}) at {top_cand['cpu_pct']:.1f}% CPU...", CYAN))
+            rep = diagnostics.diagnose_mds_stores()
+            print(diagnostics.format_mds_stores_report(rep))
+            return
+
+        print(c(f"🔍 Auto-diagnosing #1 CPU consumer: PID {top_cand['pid']} ({base_comm}) at {top_cand['cpu_pct']:.1f}% CPU...", CYAN))
         rep = diagnostics.diagnose_process(top_cand["pid"])
         print(diagnostics.format_doctor_report(rep))
     elif candidates:
         print(c("🔬 mac-health Doctor ── Active Candidate Processes", BOLD))
         print(c("No severe runaway process (>15% CPU) currently active. Top active processes:", DIM))
         print()
-        for cand in candidates:
-            print(f"  • PID {cand['pid']:>6}: {cand['comm']:<20} {cand['cpu_pct']:>5.1f}% CPU  {cand['mem_rss_mb']:>7.1f} MB RSS")
+        for cand in candidates[:8]:
+            ram_mb = cand.get("mem_rss_mb") or (cand.get("ram_gb", 0.0) * 1024.0)
+            comm_name = cand.get("base_comm") or os.path.basename(cand.get("comm", "unknown"))
+            print(f"  • PID {cand['pid']:>6}: {comm_name:<20} {cand['cpu_pct']:>5.1f}% CPU  {ram_mb:>7.1f} MB RSS")
         print()
         print(c("Run 'mh doctor <PID>' to inspect any process, or 'mh doctor --top' to force inspection.", CYAN))
     else:
@@ -644,7 +667,9 @@ def handle_fix(args):
             print("─" * 68)
             for p in candidates:
                 rec = f"mh fix {p['pid']} --tame"
-                print(f"{p['pid']:>7}  {p['cpu_pct']:>6.1f}  {p['mem_rss_mb']:>9.1f}  {p['comm'][:20]:<20}  {rec}")
+                ram_mb = p.get("mem_rss_mb") or (p.get("ram_gb", 0.0) * 1024.0)
+                comm_name = p.get("base_comm") or os.path.basename(p.get("comm", "unknown"))
+                print(f"{p['pid']:>7}  {p['cpu_pct']:>6.1f}  {ram_mb:>9.1f}  {comm_name[:20]:<20}  {rec}")
 
 
 def handle_restore(args):

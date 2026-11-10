@@ -602,6 +602,7 @@ def get_triage_candidates(sort_by: str = "composite", limit: Optional[int] = Non
                 "ppid": ppid,
                 "cpu_pct": round(cpu_pct, 1),
                 "rss_kb": round(rss_kb, 1),
+                "mem_rss_mb": round(rss_kb / 1024.0, 1),
                 "ram_gb": round(ram_gb, 3),
                 "comm": comm,
                 "base_comm": base_comm,

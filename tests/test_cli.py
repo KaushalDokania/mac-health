@@ -103,6 +103,43 @@ class TestCliRouter(unittest.TestCase):
             self.assertIn("PID 9999", out)
             self.assertIn("test_app", out)
 
+    @patch("remediation.get_triage_candidates")
+    def test_doctor_auto_candidates_below_threshold(self, mock_candidates):
+        mock_candidates.return_value = [
+            {"pid": 1234, "comm": "zsh", "base_comm": "zsh", "cpu_pct": 5.0, "ram_gb": 0.05, "mem_rss_mb": 51.2},
+            {"pid": 2345, "comm": "python", "base_comm": "python", "cpu_pct": 2.1, "ram_gb": 0.12},
+        ]
+        with patch("sys.stdout", new=io.StringIO()) as fake_out:
+            monitor.handle_doctor([])
+            out = fake_out.getvalue()
+            self.assertIn("Active Candidate Processes", out)
+            self.assertIn("PID   1234", out)
+            self.assertIn("zsh", out)
+            self.assertIn("51.2 MB RSS", out)
+
+    @patch("remediation.get_triage_candidates")
+    @patch("diagnostics.diagnose_windowserver")
+    def test_doctor_auto_detects_windowserver(self, mock_ws, mock_candidates):
+        mock_candidates.return_value = [
+            {"pid": 420, "comm": "/usr/bin/WindowServer", "base_comm": "WindowServer", "cpu_pct": 45.0, "ram_gb": 0.5, "is_protected": True},
+            {"pid": 9999, "comm": "python", "base_comm": "python", "cpu_pct": 20.0, "ram_gb": 0.2, "is_protected": False},
+        ]
+        mock_ws.return_value = {
+            "daemon": "WindowServer",
+            "pid": 420,
+            "cpu_percent": 45.0,
+            "mem_percent": 2.0,
+            "status": "HEALTHY",
+            "top_gui_consumers": [],
+            "skylight_logs": {"summary": "Clean", "entries": []},
+        }
+        with patch("sys.stdout", new=io.StringIO()) as fake_out:
+            monitor.handle_doctor([])
+            out = fake_out.getvalue()
+            self.assertIn("Auto-diagnosing #1 CPU consumer: WindowServer", out)
+            self.assertIn("High User-Space Process Detected: PID 9999", out)
+            mock_ws.assert_called_once()
+
     def test_fix_help(self):
         with patch("sys.stdout", new=io.StringIO()) as fake_out:
             monitor.handle_fix(["--help"])
